@@ -82,6 +82,7 @@ def input_parser(in_f_name):
     keywords["psi4_bsse"] = "cp"
     keywords["psi4_memory"] = "500 MB"
     keywords["qca_server_uri"] = None
+    keywords["qca_mode"] = 'run'
     keywords["verbose"] = 1
 
     with open(in_f_name, "r") as input_file:
@@ -109,7 +110,7 @@ def input_parser(in_f_name):
                 keyword_value = keyword_value.lower()
                 keyword_value = keyword_value.replace(" ", "").split("+")
                    
-            elif keyword_name in ["psi4_bsse", "psi4_memory", "psi4_method", "cif_input", "cif_output"]:
+            elif keyword_name in ["psi4_bsse", "psi4_memory", "psi4_method", "cif_input", "cif_output","qca_server_uri","qca_mode"]:
                 keyword_value = keyword_value.strip()
 
             elif keyword_name in ["nmers_up_to", "cif_a", "cif_b", "cif_c", "verbose"]:
@@ -172,6 +173,8 @@ def input_parser(in_f_name):
             keywords["psi4_method"],
             keywords["psi4_bsse"],
             keywords["psi4_memory"],
+            keywords["qca_server_uri"],
+            keywords["qca_mode"],
             keywords["verbose"])
     
 # ======================================================================
@@ -1504,7 +1507,7 @@ def nmer2psithon(cif_output, nmers, keynmer, nmer, rminseps, rcomseps, psi4_meth
 
 
 # ======================================================================
-def qcarchive_energies(cif_output, nmers, keynmer, nmer, cpus, cle_run_type, psi4_method, psi4_bsse, psi4_memory, qca_client=None, verbose=0):
+def qcarchive_energies(cif_output, nmers, keynmer, nmer, cpus, cle_run_type, psi4_method, psi4_bsse, psi4_memory, qca_client=None, qca_mode='run', verbose=0):
     """
     Arguments:
     
@@ -1550,23 +1553,36 @@ def qcarchive_energies(cif_output, nmers, keynmer, nmer, cpus, cle_run_type, psi
     # Execute Psi4 energy calculations, unless running on test mode.
 
     if "test" not in cle_run_type:
+        # Build a plan
         plan = psi4.energy(psi4_method, molecule=mymol, bsse_type=[psi4_bsse], return_plan=True, return_total_data=True)
-		plan.compute(qca_client)
-		qca_results = plan.get_results(qca_client)
+        # Sumbit jobs in the plan to the QCA jobqueue
+        plan.compute(qca_client)
 
-    # Get the non-additive n-body contribution, exclusive of all
-    # previous-body interactions.
-    #varstring = "{}-CORRECTED {}-BODY INTERACTION ENERGY".format(psi4_bsse.upper(), str(len(nmer["monomers"])))
-    
-    #n_body_energy = psi4.core.variable(varstring)
-    
-    #if len(nmer["monomers"]) > 2:
-    #    varstring = "{}-CORRECTED {}-BODY INTERACTION ENERGY".format(psi4_bsse.upper(), str(len(nmer["monomers"]) - 1))
-    #    n_minus_1_body_energy = psi4.core.variable(varstring)
-    #    nmer["nambe"] = n_body_energy - n_minus_1_body_energy
+        # Query results separate from running them
+        if qca_mode == 'query':
+            print("Querying results from the QC manager")
+            # NOTE: All results are stored in this nested dict,
+            #       could dump to a json file if you want
+            qca_results = plan.get_results(qca_client)
 
-    #else:
-    #    nmer["nambe"] = n_body_energy
+            # Get the non-additive n-body contribution, exclusive of all
+            # previous-body interactions.
+            varstring = "{}-CORRECTED {}-BODY INTERACTION ENERGY".format(psi4_bsse.upper(), str(len(nmer["monomers"])))
+            
+            n_body_energy = qca_results['extras']['qcvars']['nbody'][varstring]
+            #n_body_energy = psi4.core.variable(varstring)
+            
+            if len(nmer["monomers"]) > 2:
+                varstring = "{}-CORRECTED {}-BODY INTERACTION ENERGY".format(psi4_bsse.upper(), str(len(nmer["monomers"]) - 1))
+                n_minus_1_body_energy = psi4.core.variable(varstring)
+                nmer["nambe"] = n_body_energy - n_minus_1_body_energy
+
+            else:
+                nmer["nambe"] = n_body_energy
+
+        else:
+            print("Submitted jobs to QC manager")
+            exit()
 # ======================================================================
 
 
@@ -1640,7 +1656,7 @@ def psi4api_energies(cif_output, nmers, keynmer, nmer, cpus, cle_run_type, psi4_
 
 
 # ======================================================================
-def cle_manager(cif_output, nmers, cle_run_type, psi4_method, psi4_bsse, psi4_memory, qca_server_uri=None, verbose=0):
+def cle_manager(cif_output, nmers, cle_run_type, psi4_method, psi4_bsse, psi4_memory, qca_server_uri=None, qca_mode='run',verbose=0):
     """Manages which mode of CrystaLattE calculation will be employed.
     
     Global Variables:
@@ -1694,10 +1710,11 @@ def cle_manager(cif_output, nmers, cle_run_type, psi4_method, psi4_bsse, psi4_me
         from qcfractal import FractalServer
         
         # The location of the Fractal Server is specified as the first argument in double quotes.
-        if not qca_server_uri:
+        if qca_server_uri is None:
             qca_server_uri = "localhost:7777"
 
         # Create a QC Archive client to connect to available resources.
+        print(qca_server_uri)
         qca_client = FractalClient(qca_server_uri, verify=False)
 
     # Get the keys of the N-mers dictionary, and put them on a list.
@@ -1747,7 +1764,7 @@ def cle_manager(cif_output, nmers, cle_run_type, psi4_method, psi4_bsse, psi4_me
 
         # Run energies in PSI4 API.
         if "qcarchive" in cle_run_type:
-            qcarchive_energies(cif_output, nmers, keynmer, nmer, cpus, cle_run_type, psi4_method, psi4_bsse, psi4_memory, qca_server_uri, verbose)
+            qcarchive_energies(cif_output, nmers, keynmer, nmer, cpus, cle_run_type, psi4_method, psi4_bsse, psi4_memory, qca_client, qca_mode,verbose)
 
         # Run energies in PSI4 API.
         else:
@@ -1831,7 +1848,7 @@ def print_end_msg(start, verbose=0):
 
 
 # ======================================================================
-def main(cif_input, cif_output="sc.xyz", cif_a=5, cif_b=5, cif_c=5, nmers_up_to=2, r_cut_com=10.0, r_cut_monomer=12.0, r_cut_dimer=10.0, r_cut_trimer=8.0, r_cut_tetramer=6.0, r_cut_pentamer=4.0, cle_run_type=["psi4api", "quiet"], psi4_method="HF/STO-3G", psi4_bsse="cp", psi4_memory="500 MB", qca_server_uri=None, verbose=1):
+def main(cif_input, cif_output="sc.xyz", cif_a=5, cif_b=5, cif_c=5, nmers_up_to=2, r_cut_com=10.0, r_cut_monomer=12.0, r_cut_dimer=10.0, r_cut_trimer=8.0, r_cut_tetramer=6.0, r_cut_pentamer=4.0, cle_run_type=["psi4api", "quiet"], psi4_method="HF/STO-3G", psi4_bsse="cp", psi4_memory="500 MB", qca_server_uri=None, qca_mode='run', verbose=1):
     """Takes a CIF file and computes the crystal lattice energy using a
     many-body expansion approach.
     """
@@ -1902,7 +1919,7 @@ def main(cif_input, cif_output="sc.xyz", cif_a=5, cif_b=5, cif_c=5, nmers_up_to=
     if verbose >= 2:
         print ("\nComputing interaction energies of N-mers:")
 
-    cle_manager(cif_output, nmers, cle_run_type, psi4_method, psi4_bsse, psi4_memory, qca_server_uri, verbose)
+    cle_manager(cif_output, nmers, cle_run_type, psi4_method, psi4_bsse, psi4_memory, qca_server_uri, qca_mode,  verbose)
     # ------------------------------------------------------------------
     
     # Print the final results.
@@ -1936,6 +1953,7 @@ if __name__ == "__main__":
                 psi4_bsse="cp",
                 psi4_memory="500 MB",
                 qca_server_uri=None,
+                qca_mode='run',
                 verbose=2)
 
         print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
